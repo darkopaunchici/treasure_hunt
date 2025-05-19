@@ -1,4 +1,4 @@
-# For final project use:
+# For Final Project Use:
 
 treasure_manager_v2.c treasure_hub_v2.c treasure_monitor.c score_calculator.c build.sh
 
