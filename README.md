@@ -1,3 +1,9 @@
+# For final project use:
+
+treasure_manager_v2.c treasure_hub_v2.c treasure_monitor.c score_calculator.c build.sh
+
+The rest of the codes are for previous phases of the project
+
 # Treasure Hunt System
 
 This project implements a treasure hunt system with multiple processes and signal-based communication.
