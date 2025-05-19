@@ -1,6 +1,6 @@
 # For Final Project Use:
 
-treasure_manager_v2.c treasure_hub_v2.c treasure_monitor.c score_calculator.c build.sh
+treasure_manager_v2.c treasure_hub_v2.c treasure_monitor.c score_calculator.c build_v2.sh
 
 The rest of the codes are for previous phases of the project
 
