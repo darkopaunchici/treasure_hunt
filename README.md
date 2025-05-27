@@ -13,6 +13,7 @@ This project implements a treasure hunt system with multiple processes and signa
 1. **treasure_hub** - Interactive interface for the user
 2. **treasure_monitor** - Background process that monitors and interacts with treasure hunts
 3. **treasure_manager** - Manages the actual treasure hunts and treasures
+4. **score calculator** - Calculate the score for each hunt
 
 ## Building the System
 
