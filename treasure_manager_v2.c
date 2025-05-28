@@ -5,7 +5,6 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-#include <sys/wait.h>
 #include <time.h>
 #include <errno.h>
 #include <dirent.h>
@@ -15,7 +14,6 @@
 #define MAX_USERNAME 64
 #define MAX_CLUE 256
 #define HUNT_DIR_PREFIX "./hunts/"  // Directory prefix for hunts
-#define SCORE_CALCULATOR "./score_calculator"  // Path to score calculator program
 
 // Structure for a treasure record (fixed size)
 typedef struct {
@@ -25,7 +23,6 @@ typedef struct {
     float longitude;               // GPS longitude
     char clue[MAX_CLUE];           // Clue text
     int value;                     // Value of the treasure
-    int calculated_score;          // Calculated score from external program
     char is_active;                // 1 for active or 0 for deleted
 } Treasure;
 
@@ -35,7 +32,6 @@ void list_treasures(const char *hunt_id);
 void view_treasure(const char *hunt_id, int treasure_id);
 void remove_treasure(const char *hunt_id, int treasure_id);
 void remove_hunt(const char *hunt_id);
-void recalculate_scores(const char *hunt_id);
 void log_operation(const char *hunt_id, const char *operation);
 void create_symlink(const char *hunt_id);
 void ensure_hunt_directory(const char *hunt_id);
@@ -45,12 +41,10 @@ char* get_log_file_path(const char *hunt_id);
 void format_time(time_t time_value, char *buffer);
 void delete_file(const char *filepath);
 void create_link(const char *target, const char *linkpath);
-int calculate_score_via_pipe(const Treasure *treasure);
 
 int main(int argc, char *argv[]) {
     if (argc < 2) {
-        printf("Format: treasure_manager --<command> [hunt_id](for all commands) [treasure_id](for view, remove_treasure)\n");
-        printf("Commands: --add, --list, --view, --remove_treasure, --remove_hunt, --recalculate_scores\n");
+        printf("Format: treasure_manager --<command> [hunt_id] [treasure_id]\n");
         return 1;
     }
 
@@ -89,116 +83,13 @@ int main(int argc, char *argv[]) {
             return 1;
         }
         remove_hunt(argv[2]);
-    }
-    else if (strcmp(argv[1], "--recalculate_scores") == 0) {
-        if (argc < 3) {
-            printf("Format: treasure_manager --recalculate_scores <hunt_id>\n");
-            return 1;
-        }
-        recalculate_scores(argv[2]);
-    }
+    } 
     else {
         printf("Unknown command: %s\n", argv[1]);
         return 1;
     }
 
     return 0;
-}
-
-// Calculate score using external score calculator program via pipes
-int calculate_score_via_pipe(const Treasure *treasure) {
-    int pipe_to_calc[2];    // pipe for sending data to calculator
-    int pipe_from_calc[2];  // pipe for receiving result from calculator
-    pid_t child_pid;
-    int calculated_score = 0;
-    char input_buffer[512];
-    char output_buffer[64];
-    ssize_t bytes_read;
-    int status;
-
-    // Create pipes
-    if (pipe(pipe_to_calc) == -1 || pipe(pipe_from_calc) == -1) {
-        perror("Failed to create pipes");
-        return treasure->value; // Return original value as fallback
-    }
-
-    // Fork to create child process
-    child_pid = fork();
-    
-    if (child_pid == -1) {
-        perror("Failed to fork");
-        close(pipe_to_calc[0]);
-        close(pipe_to_calc[1]);
-        close(pipe_from_calc[0]);
-        close(pipe_from_calc[1]);
-        return treasure->value; // Return original value as fallback
-    }
-    
-    if (child_pid == 0) {
-        // Child process - execute score calculator
-        
-        // Redirect stdin to read from pipe_to_calc
-        close(pipe_to_calc[1]); // Close write end
-        dup2(pipe_to_calc[0], STDIN_FILENO);
-        close(pipe_to_calc[0]);
-        
-        // Redirect stdout to write to pipe_from_calc
-        close(pipe_from_calc[0]); // Close read end
-        dup2(pipe_from_calc[1], STDOUT_FILENO);
-        close(pipe_from_calc[1]);
-        
-        // Execute the score calculator program
-        execl(SCORE_CALCULATOR, "score_calculator", NULL);
-        
-        // If execl fails, exit with error
-        perror("Failed to execute score calculator");
-        exit(1);
-    } 
-    else {
-        // Parent process - send data to calculator and read result
-        
-        // Close unused pipe ends
-        close(pipe_to_calc[0]);
-        close(pipe_from_calc[1]);
-        
-        // Prepare input data for score calculator
-        // Format: "id username latitude longitude clue_length value"
-        snprintf(input_buffer, sizeof(input_buffer), "%d %s %.6f %.6f %d %d\n",
-                treasure->id,
-                treasure->username,
-                treasure->latitude,
-                treasure->longitude,
-                (int)strlen(treasure->clue),
-                treasure->value);
-        
-        // Send data to calculator
-        if (write(pipe_to_calc[1], input_buffer, strlen(input_buffer)) == -1) {
-            perror("Failed to write to score calculator");
-        }
-        close(pipe_to_calc[1]); // Close write end to signal EOF
-        
-        // Read result from calculator
-        bytes_read = read(pipe_from_calc[0], output_buffer, sizeof(output_buffer) - 1);
-        if (bytes_read > 0) {
-            output_buffer[bytes_read] = '\0';
-            calculated_score = atoi(output_buffer);
-        } else {
-            printf("Warning: Failed to read score from calculator, using original value\n");
-            calculated_score = treasure->value;
-        }
-        
-        close(pipe_from_calc[0]);
-        
-        // Wait for child process to complete
-        waitpid(child_pid, &status, 0);
-        
-        if (WIFEXITED(status) && WEXITSTATUS(status) != 0) {
-            printf("Warning: Score calculator exited with error code %d\n", WEXITSTATUS(status));
-            calculated_score = treasure->value; // Use original value as fallback
-        }
-    }
-    
-    return calculated_score;
 }
 
 void format_time(time_t time_value, char *buffer) {
@@ -393,10 +284,6 @@ void add_treasure(const char *hunt_id) {
     printf("Enter value: ");
     scanf("%d", &new_treasure.value);
     
-    // Calculate score using external program
-    printf("Calculating score using external calculator...\n");
-    new_treasure.calculated_score = calculate_score_via_pipe(&new_treasure);
-    
     // Open the file in append mode, create if it doesn't exist
     fd = open(file_path, O_WRONLY | O_CREAT | O_APPEND, 0644);
     if (fd == -1) {
@@ -420,13 +307,10 @@ void add_treasure(const char *hunt_id) {
     strcat(log_message, id_str);
     strcat(log_message, " by ");
     strcat(log_message, new_treasure.username);
-    sprintf(id_str, " (score: %d)", new_treasure.calculated_score);
-    strcat(log_message, id_str);
     
     log_operation(hunt_id, log_message);
     
-    printf("Treasure added successfully with ID %d (calculated score: %d)\n", 
-           new_treasure.id, new_treasure.calculated_score);
+    printf("Treasure added successfully with ID %d\n", new_treasure.id);
 }
 
 // List all treasures in a hunt
@@ -438,7 +322,6 @@ void list_treasures(const char *hunt_id) {
     char time_str[30];
     char log_message[256];
     int count = 0;
-    int total_value = 0, total_score = 0;
     
     // Open the treasure file
     fd = open(file_path, O_RDONLY);
@@ -466,16 +349,14 @@ void list_treasures(const char *hunt_id) {
     printf("Total file size: %ld bytes\n", (long)file_stat.st_size);
     printf("Last modified: %s\n\n", time_str);
     printf("Treasures:\n");
-    printf("--------------------------------------------------------------------\n");
+    printf("--------------------------------------------------\n");
     
     // Read and print all active treasures
     while (read(fd, &treasure, sizeof(Treasure)) == sizeof(Treasure)) {
         if (treasure.is_active) {
-            printf("ID: %d | User: %s | Value: %d | Score: %d\n", 
-                   treasure.id, treasure.username, treasure.value, treasure.calculated_score);
+            printf("ID: %d | User: %s | Value: %d\n", 
+                   treasure.id, treasure.username, treasure.value);
             count++;
-            total_value += treasure.value;
-            total_score += treasure.calculated_score;
         }
     }
     
@@ -483,9 +364,8 @@ void list_treasures(const char *hunt_id) {
         printf("No active treasures found in this hunt.\n");
     }
     
-    printf("--------------------------------------------------------------------\n");
-    printf("Total treasures: %d | Total value: %d | Total score: %d\n", 
-           count, total_value, total_score);
+    printf("--------------------------------------------------\n");
+    printf("Total treasures: %d\n", count);
     
     close(fd);
     
@@ -534,7 +414,6 @@ void view_treasure(const char *hunt_id, int treasure_id) {
         printf("Location: %.6f, %.6f\n", treasure.latitude, treasure.longitude);
         printf("Clue: %s\n", treasure.clue);
         printf("Value: %d\n", treasure.value);
-        printf("Calculated Score: %d\n", treasure.calculated_score);
         printf("--------------------------------------------------\n");
         
         // Log the operation
@@ -549,72 +428,6 @@ void view_treasure(const char *hunt_id, int treasure_id) {
     } else {
         printf("Treasure with ID %d not found in hunt '%s'.\n", treasure_id, hunt_id);
     }
-}
-
-// Recalculate scores for all treasures in a hunt
-void recalculate_scores(const char *hunt_id) {
-    char *file_path = get_treasure_file_path(hunt_id);
-    int fd;
-    Treasure treasure;
-    off_t position;
-    int count = 0;
-    char log_message[256];
-    
-    // Open the treasure file for reading and writing
-    fd = open(file_path, O_RDWR);
-    if (fd == -1) {
-        if (errno == ENOENT) {
-            printf("Hunt '%s' has no treasures or does not exist.\n", hunt_id);
-            return;
-        }
-        perror("Failed to open treasure file");
-        exit(1);
-    }
-    
-    printf("Recalculating scores for hunt '%s'...\n", hunt_id);
-    
-    // Process each treasure
-    while (read(fd, &treasure, sizeof(Treasure)) == sizeof(Treasure)) {
-        position = lseek(fd, 0, SEEK_CUR) - sizeof(Treasure);
-        
-        if (treasure.is_active) {
-            int old_score = treasure.calculated_score;
-            
-            // Recalculate score
-            treasure.calculated_score = calculate_score_via_pipe(&treasure);
-            
-            // Move back to the position of this treasure
-            if (lseek(fd, position, SEEK_SET) == -1) {
-                perror("Failed to seek in file");
-                close(fd);
-                exit(1);
-            }
-            
-            // Write the updated treasure
-            if (write(fd, &treasure, sizeof(Treasure)) != sizeof(Treasure)) {
-                perror("Failed to update treasure score");
-                close(fd);
-                exit(1);
-            }
-            
-            printf("Treasure ID %d: score updated from %d to %d\n", 
-                   treasure.id, old_score, treasure.calculated_score);
-            count++;
-            
-            // Move to next treasure position
-            lseek(fd, position + sizeof(Treasure), SEEK_SET);
-        }
-    }
-    
-    close(fd);
-    
-    printf("Recalculated scores for %d treasures.\n", count);
-    
-    // Log the operation
-    strcpy(log_message, "Recalculated scores for hunt '");
-    strcat(log_message, hunt_id);
-    strcat(log_message, "'");
-    log_operation(hunt_id, log_message);
 }
 
 // Remove a treasure from a hunt
